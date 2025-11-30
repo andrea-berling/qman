@@ -81,6 +81,10 @@ result_t *results = NULL;
 
 unsigned results_len = 0;
 
+result_t *toc_results = NULL;
+
+unsigned toc_results_len = 0;
+
 mark_t mark = {false, 0, 0, 0, 0};
 
 full_regex_t re_man, re_http, re_email, re_file;
@@ -2480,6 +2484,55 @@ int search_prev(result_t *res, unsigned res_len, unsigned from) {
   return -1;
 }
 
+unsigned search_toc(result_t **dst, const wchar_t *needle, const toc_entry_t *toc,
+                unsigned toc_len, bool cs) {
+  unsigned ln;                                // current line no.
+  unsigned i = 0;                             // current result no.
+  const unsigned needle_len = wcslen(needle); // length of `needle`
+  wchar_t *cur_hayst;         // current haystuck (i.e. text of current line)
+  wchar_t *hit = NULL;        // current return value of `wcscasestr()`
+  unsigned res_len = BS_LINE; // result buffer length
+  result_t *res = aalloc(res_len, result_t); // result buffer
+
+  // For each line...
+  for (ln = 0; ln < toc_len; ln++) {
+    // Start at the beginning of the line's text
+    cur_hayst = toc[ln].text;
+    unsigned int entry_len = wcslen(cur_hayst);
+    // Search for `needle`
+    if (cs)
+      hit = wcscasestr(cur_hayst, needle);
+    else
+      hit = wcsstr(cur_hayst, needle);
+    // While `needle` has been found...
+    while (NULL != hit) {
+      // Add the search result to `res[i]`
+      res[i].start = cur_hayst - toc[ln].text;
+      res[i].end = res[i].start + needle_len;
+      res[i].line = ln;
+      // Go to the part of the line's text that follows `needle`
+      cur_hayst = hit + needle_len;
+      // And search for `needle` again
+      if (cur_hayst - toc[ln].text < entry_len)
+        if (cs)
+          hit = wcscasestr(cur_hayst, needle);
+        else
+          hit = wcsstr(cur_hayst, needle);
+      else
+        hit = NULL;
+      // Increment `i` (and reallocate memory if necessary)
+      inc_i;
+    }
+  }
+
+  // If no results were found, free the result buffer
+  if (0 == i)
+    free(res);
+
+  *dst = res;
+  return i;
+}
+
 extern unsigned get_mark(wchar_t **dst, mark_t mark, const line_t *lines) {
   // Return if no text is marked
   if (!mark.enabled) {
@@ -2535,6 +2588,12 @@ void populate_page() {
   toc_free(toc, toc_len);
   toc = NULL;
   toc_len = 0;
+
+  // Reset `toc_results`
+  if (NULL != toc_results && toc_results_len > 0)
+    free(toc_results);
+  toc_results = NULL;
+  toc_results_len = 0;
 
   // Populate page according to the request type of `history[history_cur]`
   switch (history[history_cur].request_type) {

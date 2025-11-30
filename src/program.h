@@ -211,6 +211,12 @@ extern result_t *results;
 // Total number of search results in current page
 extern unsigned results_len;
 
+// Search results in the toc window
+extern result_t *toc_results;
+
+// Total number of search results in the toc window
+extern unsigned toc_results_len;
+
 // Marked text
 extern mark_t mark;
 
@@ -444,6 +450,9 @@ extern int search_next(result_t *res, unsigned res_len, unsigned from);
 // number `from`. If no such line exists, return -1. `res_len` is the length of
 // `res`.
 extern int search_prev(result_t *res, unsigned res_len, unsigned from);
+
+unsigned search_toc(result_t **dst, const wchar_t *needle, const toc_entry_t *toc,
+                unsigned toc_len, bool cs);
 
 // Extract from `lines` the text indicated by `mark`, and place it into `dst`,
 // allocating all needed memory. Return the length of `dst`. In case of error,
