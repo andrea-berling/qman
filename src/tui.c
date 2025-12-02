@@ -485,6 +485,126 @@ void draw_toc(toc_entry_t *toc, unsigned toc_len, unsigned top,
   wnoutrefresh(wimm);
 }
 
+bool toc_search(bool back, int *focus, unsigned top, unsigned height) {
+  int original_focus = *focus;
+  wchar_t *prompt = back ? L"?" : L"/"; // search prompt
+  wchar_t help[BS_SHORT];               // help message
+  swprintf(help, BS_SHORT, L"Press %ls to search or %ls/%ls to abort",
+           ch2name(KEY_ENTER), ch2name(KEY_BREAK), ch2name('\e'));
+  wchar_t inpt[BS_SHORT - 2]; // search string
+  wchar_t pout[BS_SHORT];     // search prompt and string printout
+  const unsigned width = config.layout.width / 2 - 1; // search string width
+  int got_inpt; // current return value of `get_str_next()`
+
+  // Get search string
+  swprintf(pout, BS_SHORT, prompt);
+  draw_stat(L"SEARCH", page_title, page_len, page_top + 1,
+            page_left / config.layout.tabstop + 1, pout, help, NULL);
+  got_inpt = get_str_next(wstat, 1, 1, inpt, MIN(BS_SHORT - 3, width));
+
+  // As the user types something...
+  while (got_inpt < 0) {
+    // If terminal size has changed, regenerate page and redraw everything
+    // TODO: test this
+    if (termsize_changed()) {
+      del_imm();
+      init_windows();
+      populate_page();
+      if (err)
+        winddown(ES_OPER_ERROR, err_msg);
+      populate_toc();
+      termsize_adjust();
+      tui_redraw();
+      draw_imm(true, true, config.colours.toc_text, L"Table of Contents", help);
+      draw_toc(toc, toc_len, top, *focus);
+      doupdate();
+    }
+
+    // Free previous `results`
+    if (NULL != toc_results && toc_results_len > 0)
+      free(toc_results);
+
+    // Populate `results` and `results_len`
+    if (0 == wcslen(inpt)) {
+      // Input is empty; set `results` to NULL, `results_len` to 0
+      toc_results = NULL;
+      toc_results_len = 0;
+      *focus = 0;
+    } else {
+      // Input is not empty; populate `results` and `results_len` from input,
+      // and set `my_top` to the location of the first match
+      toc_results_len = search_toc(&toc_results, inpt, toc, toc_len,
+                           config.capabilities.icase_search);
+      int new_focus;
+      if (back) {
+        if ((new_focus = search_prev(toc_results, toc_results_len, *focus)) != -1) {
+          *focus = new_focus;
+        }
+      } else {
+        if ((new_focus = search_next(toc_results, toc_results_len, *focus)) != -1) {
+          *focus = new_focus;
+        }
+      }
+    }
+
+    // Redraw all windows, scrolling over to `my_top`
+    swprintf(pout, BS_SHORT, L"%ls%ls", prompt, inpt);
+    if (0 == toc_results_len) {
+      draw_stat(L"SEARCH", page_title, page_len, page_left / config.layout.tabstop + 1,
+                page_left / config.layout.tabstop + 1, pout, NULL,
+                L"Search string not found");
+      cbeep();
+    } else {
+      draw_stat(L"SEARCH", page_title, page_len, page_left / config.layout.tabstop + 1,
+                page_left / config.layout.tabstop + 1, pout, help, NULL);
+    }
+
+    // Adjust `top` (in case the entire menu won't fit in the immediate window)
+    if (*focus < top)
+      top = *focus;
+    else if (*focus > top + height - 6)
+      top = *focus - height + 6;
+
+    draw_toc(toc, toc_len, top, *focus);
+    doupdate();
+
+    // Get next user input
+    got_inpt = get_str_next(wstat, 1, 1, NULL, 0);
+  }
+
+  if (got_inpt > 0) {
+    return true;
+  } else {
+    // User hit ESC or CTRL-C; clear search results
+    if (NULL != toc_results && toc_results_len > 0)
+      free(toc_results);
+    toc_results = NULL;
+    toc_results_len = 0;
+    *focus = original_focus;
+    tui_error(L"Aborted");
+    return false;
+  }
+}
+
+bool toc_search_next(bool back, int *focus) {
+  int new_focus;
+
+  // Store the previous/next search result into `new_focus`
+  if (back)
+    new_focus = search_prev(toc_results, toc_results_len, *focus - 1);
+  else
+    new_focus = search_next(toc_results, toc_results_len, *focus + 1);
+
+  // If result wasn't found, show error message
+  if (-1 == new_focus) {
+    tui_error(L"No more search results");
+    return false;
+  }
+
+  *focus = new_focus;
+  return true;
+}
+
 //
 // Functions (generic)
 //
@@ -2031,9 +2151,10 @@ bool tui_history() {
 
 bool tui_toc() {
   wchar_t help[BS_SHORT]; // help message
-  swprintf(help, BS_SHORT, L"%ls/%ls: choose   %ls: jump   %ls/%ls: abort",
+  swprintf(help, BS_SHORT, L"%ls/%ls: choose   %ls: jump   %ls/%ls: abort   %ls: go to first   %ls: go to last",
            ch2name(config.keys[PA_UP][0]), ch2name(config.keys[PA_DOWN][0]),
-           ch2name(config.keys[PA_OPEN][0]), ch2name(KEY_BREAK), ch2name('\e'));
+           ch2name(config.keys[PA_OPEN][0]), ch2name(KEY_BREAK), ch2name('\e'),
+           ch2name(config.keys[PA_HOME][0]), ch2name(config.keys[PA_END][0]));
   int hinput;                 // keyboard/mouse input from the user
   mouse_t hms = MS_EMPTY;     // mouse status corresponding to `hinput`
   action_t haction = PA_NULL; // program action corresponding to `hinput`
@@ -2061,6 +2182,10 @@ bool tui_toc() {
         (BT_RIGHT == hms.button && hms.up)) {
       // User hit ESC or CTRL-C or pressed right mouse button; abort
       del_imm();
+      if (NULL != toc_results && toc_results_len > 0)
+        free(toc_results);
+      toc_results = NULL;
+      toc_results_len = 0;
       tui_error(L"Aborted");
       tui_redraw();
       return false;
@@ -2091,8 +2216,30 @@ bool tui_toc() {
       break;
     case PA_OPEN:
       del_imm();
+      if (NULL != toc_results && toc_results_len > 0)
+        free(toc_results);
+      toc_results = NULL;
+      toc_results_len = 0;
       toc_jump(toc, focus);
       return true;
+      break;
+    case PA_HOME:
+      focus = 0;
+      break;
+    case PA_END:
+      focus = toc_len - 1;
+      break;
+    case PA_SEARCH:
+      toc_search(false, &focus, top, height);
+      break;
+    case PA_SEARCH_BACK:
+      toc_search(true, &focus, top, height);
+      break;
+    case PA_SEARCH_NEXT:
+      toc_search_next(false, &focus);
+      break;
+    case PA_SEARCH_PREV:
+      toc_search_next(true, &focus);
       break;
     case PA_NULL:
     default:
@@ -2117,6 +2264,10 @@ bool tui_toc() {
               // If the `left_click_open` option is set, go to the appropriate
               // TOC entry
               del_imm();
+              if (NULL != toc_results && toc_results_len > 0)
+                free(toc_results);
+              toc_results = NULL;
+              toc_results_len = 0;
               toc_jump(toc, focus);
               return true;
             }
@@ -2124,6 +2275,10 @@ bool tui_toc() {
       } else if (BT_WHEEL == hms.button && hms.up) {
         // On mouse wheel click, go to the appropriate TOC entry
         del_imm();
+        if (NULL != toc_results && toc_results_len > 0)
+          free(toc_results);
+        toc_results = NULL;
+        toc_results_len = 0;
         toc_jump(toc, focus);
         return true;
       }
@@ -2146,14 +2301,17 @@ bool tui_toc() {
       populate_toc();
       termsize_adjust();
       tui_redraw();
-      top = 0;
-      focus = 0;
       draw_imm(true, true, config.colours.toc_text, L"Table of Contents", help);
-      draw_toc(toc, toc_len, top, focus);
+      draw_toc(toc, toc_len, 0, focus);
       doupdate();
       height = getmaxy(wimm);
     }
   }
+
+  if (NULL != toc_results && toc_results_len > 0)
+    free(toc_results);
+  toc_results = NULL;
+  toc_results_len = 0;
 
   return true;
 }
